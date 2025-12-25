@@ -1,7 +1,7 @@
 import os
 import json
 import asyncio
-from aiohttp import web
+from aiohttp import web, WSMsgType
 
 PORT = int(os.environ.get("PORT", 8080))
 MODS_DIR = 'mods'
@@ -50,23 +50,25 @@ async def websocket_handler(request):
                 "blocks": WORLD_STATE
             })
 
-        # 3. ВАЖНО: Отправляем новому игроку позиции УЖЕ существующих игроков
-        # Это исправляет баг, когда новые (или мобильные) игроки не видят старых
+        # 3. Отправляем новому игроку позиции УЖЕ существующих игроков
         for client_ws, info in CONNECTED_CLIENTS.items():
-            if client_ws != ws:
-                await ws.send_json({
-                    'type': 'move',
-                    'id': info['id'],
-                    'name': info['name'],
-                    'x': info['x'],
-                    'y': info['y'],
-                    'z': info['z'],
-                    'ry': info['ry']
-                })
+            if client_ws != ws and not client_ws.closed:
+                try:
+                    await ws.send_json({
+                        'type': 'move',
+                        'id': info['id'],
+                        'name': info['name'],
+                        'x': info['x'],
+                        'y': info['y'],
+                        'z': info['z'],
+                        'ry': info['ry']
+                    })
+                except Exception:
+                    pass # Игнорируем ошибки при отправке начальных данных
 
         # 4. Слушаем сообщения
         async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
+            if msg.type == WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
                     data['id'] = player_id 
@@ -104,11 +106,15 @@ async def websocket_handler(request):
                     # Рассылка всем остальным
                     for client in list(CONNECTED_CLIENTS.keys()):
                         if client != ws and not client.closed:
-                            await client.send_json(data)
+                            try:
+                                await client.send_json(data)
+                            except Exception:
+                                # Если клиент отвалился во время рассылки, просто игнорируем
+                                pass
                             
                 except Exception as e:
                     print(f"Ошибка данных: {e}")
-            elif msg.type == web.WSMsgType.ERROR:
+            elif msg.type == WSMsgType.ERROR:
                 print('ws connection closed with exception %s', ws.exception())
 
     finally:
@@ -116,9 +122,14 @@ async def websocket_handler(request):
             del CONNECTED_CLIENTS[ws]
         
         leave_msg = {"type": "player_leave", "id": player_id}
+        # Рассылка сообщения о выходе
         for client in list(CONNECTED_CLIENTS.keys()):
             if not client.closed:
-                await client.send_json(leave_msg)
+                try:
+                    # Оборачиваем в try-except, чтобы избежать ClientConnectionResetError
+                    await client.send_json(leave_msg)
+                except Exception:
+                    pass
 
     return ws
 
