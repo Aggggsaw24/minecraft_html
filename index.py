@@ -8,7 +8,9 @@ MODS_DIR = 'mods'
 
 # --- ХРАНИЛИЩЕ МИРА ---
 WORLD_STATE = []
-# Хранилище клиентов: {ws: {'id': 123, 'name': 'Player'}}
+
+# Хранилище клиентов и их состояния
+# {ws: {'id': 123, 'name': 'Guest', 'x': 0, 'y': 0, 'z': 0, 'ry': 0}}
 CONNECTED_CLIENTS = {}
 
 async def handle_index(request):
@@ -23,29 +25,46 @@ async def handle_mods_list(request):
     return web.json_response(mods)
 
 async def websocket_handler(request):
-    # ВАЖНО: Объявляем global в самом начале функции
     global WORLD_STATE
     
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
     player_id = id(ws)
-    # По умолчанию имя гость
-    CONNECTED_CLIENTS[ws] = {'id': player_id, 'name': f"Guest_{str(player_id)[-4:]}"}
+    # Инициализируем игрока с начальными координатами
+    CONNECTED_CLIENTS[ws] = {
+        'id': player_id, 
+        'name': f"Guest_{str(player_id)[-4:]}",
+        'x': 0, 'y': 10, 'z': 0, 'ry': 0
+    }
     print(f"[WS] Игрок {player_id} подключился")
 
     try:
         # 1. Отправляем ID игроку
         await ws.send_json({"type": "init", "id": player_id})
 
-        # 2. Отправляем текущий мир (Чтение WORLD_STATE)
+        # 2. Отправляем текущий мир (Блоки)
         if WORLD_STATE:
             await ws.send_json({
                 "type": "world_load", 
                 "blocks": WORLD_STATE
             })
 
-        # 3. Слушаем сообщения
+        # 3. ВАЖНО: Отправляем новому игроку позиции УЖЕ существующих игроков
+        # Это исправляет баг, когда новые (или мобильные) игроки не видят старых
+        for client_ws, info in CONNECTED_CLIENTS.items():
+            if client_ws != ws:
+                await ws.send_json({
+                    'type': 'move',
+                    'id': info['id'],
+                    'name': info['name'],
+                    'x': info['x'],
+                    'y': info['y'],
+                    'z': info['z'],
+                    'ry': info['ry']
+                })
+
+        # 4. Слушаем сообщения
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 try:
@@ -58,13 +77,17 @@ async def websocket_handler(request):
                         CONNECTED_CLIENTS[ws]['name'] = name
                         data['name'] = name
 
+                    # Обработка движения (обновляем память сервера)
                     if data.get('type') == 'move':
+                        CONNECTED_CLIENTS[ws]['x'] = data.get('x', 0)
+                        CONNECTED_CLIENTS[ws]['y'] = data.get('y', 0)
+                        CONNECTED_CLIENTS[ws]['z'] = data.get('z', 0)
+                        CONNECTED_CLIENTS[ws]['ry'] = data.get('ry', 0)
                         data['name'] = CONNECTED_CLIENTS[ws]['name']
 
-                    # ЛОГИКА БЛОКОВ
+                    # Логика блоков
                     if data.get('type') == 'block':
                         if data['action'] == 'add':
-                            # Добавление (изменение списка методом append не требует global, но для единообразия ок)
                             block_data = {
                                 'x': data['x'], 'y': data['y'], 'z': data['z'], 
                                 'color': data['color']
@@ -72,14 +95,13 @@ async def websocket_handler(request):
                             WORLD_STATE.append(block_data)
                         
                         elif data['action'] == 'remove':
-                            # Удаление (перезапись переменной требует global)
                             WORLD_STATE = [b for b in WORLD_STATE if not (
                                 abs(b['x'] - data['x']) < 0.1 and 
                                 abs(b['y'] - data['y']) < 0.1 and 
                                 abs(b['z'] - data['z']) < 0.1
                             )]
 
-                    # Рассылка
+                    # Рассылка всем остальным
                     for client in list(CONNECTED_CLIENTS.keys()):
                         if client != ws and not client.closed:
                             await client.send_json(data)
