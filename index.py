@@ -23,11 +23,14 @@ async def handle_mods_list(request):
     return web.json_response(mods)
 
 async def websocket_handler(request):
+    # ВАЖНО: Объявляем global в самом начале функции
+    global WORLD_STATE
+    
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
     player_id = id(ws)
-    # По умолчанию имя гость, пока не пришлет 'join'
+    # По умолчанию имя гость
     CONNECTED_CLIENTS[ws] = {'id': player_id, 'name': f"Guest_{str(player_id)[-4:]}"}
     print(f"[WS] Игрок {player_id} подключился")
 
@@ -35,41 +38,33 @@ async def websocket_handler(request):
         # 1. Отправляем ID игроку
         await ws.send_json({"type": "init", "id": player_id})
 
-        # 2. Отправляем текущий мир
+        # 2. Отправляем текущий мир (Чтение WORLD_STATE)
         if WORLD_STATE:
             await ws.send_json({
                 "type": "world_load", 
                 "blocks": WORLD_STATE
             })
 
-        # 3. Отправляем список уже подключенных игроков новому игроку
-        for client_ws, info in CONNECTED_CLIENTS.items():
-            if client_ws != ws:
-                # Отправляем "привет" новому игроку о старом игроке (чтобы он знал его имя)
-                # Позицию он получит в следующем update цикле, главное имя
-                pass 
-
-        # 4. Слушаем сообщения
+        # 3. Слушаем сообщения
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
                     data['id'] = player_id 
 
-                    # Обработка входа (Никнейм)
+                    # Обработка входа
                     if data.get('type') == 'join':
                         name = data.get('name', 'Guest')
                         CONNECTED_CLIENTS[ws]['name'] = name
-                        # Сообщаем всем, что игрок обновил инфо (имя)
-                        data['name'] = name # Добавляем имя в пакет для рассылки
+                        data['name'] = name
 
-                    # Если это движение, добавляем имя игрока, чтобы другие видели подпись
                     if data.get('type') == 'move':
                         data['name'] = CONNECTED_CLIENTS[ws]['name']
 
                     # ЛОГИКА БЛОКОВ
                     if data.get('type') == 'block':
                         if data['action'] == 'add':
+                            # Добавление (изменение списка методом append не требует global, но для единообразия ок)
                             block_data = {
                                 'x': data['x'], 'y': data['y'], 'z': data['z'], 
                                 'color': data['color']
@@ -77,7 +72,7 @@ async def websocket_handler(request):
                             WORLD_STATE.append(block_data)
                         
                         elif data['action'] == 'remove':
-                            global WORLD_STATE
+                            # Удаление (перезапись переменной требует global)
                             WORLD_STATE = [b for b in WORLD_STATE if not (
                                 abs(b['x'] - data['x']) < 0.1 and 
                                 abs(b['y'] - data['y']) < 0.1 and 
