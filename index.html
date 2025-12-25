@@ -2,10 +2,11 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft JS + Mods + Multiplayer</title>
+    <title>Minecraft JS Multiplayer + Chat</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: monospace; user-select: none; }
+        body { margin: 0; overflow: hidden; font-family: 'Courier New', monospace; user-select: none; }
         
+        /* Прицел */
         #crosshair {
             position: absolute; top: 50%; left: 50%;
             width: 20px; height: 20px;
@@ -14,20 +15,42 @@
         #crosshair::before { content: ''; position: absolute; top: 9px; left: 0; width: 20px; height: 2px; background: rgba(255,255,255,0.8); }
         #crosshair::after { content: ''; position: absolute; top: 0; left: 9px; width: 2px; height: 20px; background: rgba(255,255,255,0.8); }
         
+        /* UI слой */
         #ui-layer { 
             position: absolute; top: 10px; left: 10px; 
             color: white; text-shadow: 1px 1px 0 #000; 
             pointer-events: none; z-index: 5;
         }
         
-        #chat-log { 
-            position: absolute; bottom: 80px; left: 10px; 
-            color: white; text-shadow: 1px 1px 0 #000; 
-            width: 400px; height: 150px; 
-            overflow-y: auto; pointer-events: none; 
-            background: linear-gradient(to top, rgba(0,0,0,0.5), transparent);
-            padding: 10px;
+        /* Чат лог */
+        #chat-container {
+            position: absolute; bottom: 10px; left: 10px;
+            width: 400px;
+            display: flex; flex-direction: column; gap: 5px;
+            z-index: 20;
         }
+
+        #chat-log { 
+            height: 200px; 
+            overflow-y: auto; 
+            background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+            padding: 10px;
+            color: white; text-shadow: 1px 1px 0 #000; 
+            pointer-events: none; /* Пропускать клики сквозь чат */
+            scrollbar-width: none;
+        }
+
+        /* Поле ввода чата */
+        #chat-input {
+            width: 100%; padding: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid #555;
+            color: white; font-family: inherit;
+            display: none; /* Скрыт по умолчанию */
+            pointer-events: auto;
+        }
+
+        #chat-input:focus { outline: none; border-color: #88ff88; }
         
         #mod-status { color: yellow; font-weight: bold; }
         
@@ -35,10 +58,10 @@
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.7); display: flex; flex-direction: column;
             justify-content: center; align-items: center; color: white;
-            z-index: 20; cursor: pointer;
+            z-index: 30; cursor: pointer;
         }
     </style>
-    <!-- Подключаем Three.js через CDN -->
+    <!-- Three.js -->
     <script type="importmap">
         {
             "imports": {
@@ -52,52 +75,56 @@
     <div id="crosshair"></div>
     
     <div id="ui-layer">
-        <h1>MC JS Multiplayer</h1>
+        <h1>MC JS Online</h1>
         <div>Mods: <span id="mod-status">Scanning...</span></div>
-        <div>Your ID: <span id="my-id">Offline</span></div>
+        <div>ID: <span id="my-id">Offline</span></div>
     </div>
     
-    <div id="chat-log"></div>
+    <div id="chat-container">
+        <div id="chat-log"></div>
+        <input type="text" id="chat-input" placeholder="Нажмите Enter чтобы отправить..." maxlength="100">
+    </div>
 
     <div id="instructions">
         <h1>Кликни чтобы играть</h1>
-        <p>WASD - Ходить | SPACE - Прыжок | M - Магия (из мода)</p>
+        <p>WASD - Ходить | SPACE - Прыжок</p>
+        <p>ЛКМ - Ломать | ПКМ - Строить</p>
+        <p>ENTER - Чат</p>
     </div>
 
     <script type="module">
         import * as THREE from 'three';
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
-        // --- 1. ГЛОБАЛЬНЫЙ API ДЛЯ МОДОВ ---
-        // Мы создаем объект window.GameAPI, чтобы моды могли к нему обращаться
+        // --- ГЛОБАЛЬНЫЙ API ---
         window.GameAPI = {
-            THREE: THREE,           // Доступ к библиотеке Three.js
-            scene: null,            // Сцена
-            camera: null,           // Камера
-            playerParams: {},       // Параметры игрока
-            addBlock: null,         // Функция добавления блока
-            chat: (msg) => logChat("[MOD]: " + msg)
+            THREE: THREE,
+            scene: null,
+            camera: null,
+            addBlock: null,
+            chat: (msg) => logChat(`[MOD]: ${msg}`)
         };
 
-        // --- 2. ОСНОВНЫЕ ПЕРЕМЕННЫЕ ---
+        // --- ПЕРЕМЕННЫЕ ---
         let camera, scene, renderer, controls;
-        const objects = []; // Массив объектов для коллизии
+        let raycaster; // Для определения блока под прицелом
+        const objects = []; // Блоки, с которыми можно взаимодействовать
+        const playersMap = {}; // ID -> Mesh
+        
         let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
         let canJump = false;
         let prevTime = performance.now();
         const velocity = new THREE.Vector3();
         const direction = new THREE.Vector3();
 
-        // Мультиплеер
         let socket;
         let myId = null;
-        const otherPlayers = {}; // Хранилище других игроков {id: Mesh}
+        let isChatting = false;
 
-        // Запуск
         init();
         animate();
-        initMultiplayer(); // Подключение к Python серверу
-        loadMods();        // Загрузка модов из папки
+        initMultiplayer(); 
+        loadMods();
 
         function init() {
             // Сцена
@@ -116,198 +143,307 @@
             dirLight.position.set(50, 100, 50);
             scene.add(dirLight);
 
-            // Пол (Зеленая трава)
+            // Пол
             const geometry = new THREE.PlaneGeometry(200, 200);
             geometry.rotateX(-Math.PI / 2);
             const material = new THREE.MeshBasicMaterial({ color: 0x5b8c38 });
             const floor = new THREE.Mesh(geometry, material);
+            floor.name = "floor"; // Чтобы нельзя было удалить пол
             scene.add(floor);
-            objects.push(floor); // Добавляем пол в объекты (хотя коллизия пока простая)
+            objects.push(floor); 
 
             // Рендерер
             renderer = new THREE.WebGLRenderer({ antialias: false });
             renderer.setSize(window.innerWidth, window.innerHeight);
             document.body.appendChild(renderer.domElement);
 
-            // Управление
+            // Управление и Raycaster
             controls = new PointerLockControls(camera, document.body);
-            
+            raycaster = new THREE.Raycaster();
+            raycaster.far = 8; // Дистанция взаимодействия
+
             const instr = document.getElementById('instructions');
-            instr.addEventListener('click', () => controls.lock());
+            instr.addEventListener('click', () => {
+                if (!isChatting) controls.lock();
+            });
             
             controls.addEventListener('lock', () => instr.style.display = 'none');
-            controls.addEventListener('unlock', () => instr.style.display = 'flex');
+            controls.addEventListener('unlock', () => {
+                // Если мы не в чате, показываем меню
+                if (!isChatting) instr.style.display = 'flex';
+            });
 
             scene.add(controls.getObject());
 
-            // Обработка клавиш
-            const onKeyDown = (e) => {
-                switch (e.code) {
-                    case 'KeyW': moveForward = true; break;
-                    case 'KeyA': moveLeft = true; break;
-                    case 'KeyS': moveBackward = true; break;
-                    case 'KeyD': moveRight = true; break;
-                    case 'Space': 
-                        if (canJump) velocity.y += 15; 
-                        canJump = false; 
-                        break;
-                }
-            };
-            const onKeyUp = (e) => {
-                switch (e.code) {
-                    case 'KeyW': moveForward = false; break;
-                    case 'KeyA': moveLeft = false; break;
-                    case 'KeyS': moveBackward = false; break;
-                    case 'KeyD': moveRight = false; break;
-                }
-            };
+            // События
             document.addEventListener('keydown', onKeyDown);
             document.addEventListener('keyup', onKeyUp);
+            document.addEventListener('mousedown', onMouseClick);
             window.addEventListener('resize', onWindowResize);
 
-            // --- ЗАПОЛНЯЕМ API ---
+            // API Export
             window.GameAPI.scene = scene;
             window.GameAPI.camera = camera;
             window.GameAPI.renderer = renderer;
-            
-            // Функция для модов: Добавить блок
-            window.GameAPI.addBlock = function(x, y, z, color = 0xff0000) {
-                const geo = new THREE.BoxGeometry(1, 1, 1);
-                const mat = new THREE.MeshStandardMaterial({ color: color });
-                const mesh = new THREE.Mesh(geo, mat);
-                mesh.position.set(x, y, z);
-                scene.add(mesh);
-                objects.push(mesh);
-                return mesh;
-            };
+            window.GameAPI.addBlock = createBlock;
         }
 
-        // --- 3. ЗАГРУЗКА МОДОВ ---
-        async function loadMods() {
-            const statusEl = document.getElementById('mod-status');
-            try {
-                // Спрашиваем у сервера список файлов в папке mods
-                const response = await fetch('/api/get_mods');
-                if (!response.ok) throw new Error("API error");
-                
-                const mods = await response.json();
-                
-                if (mods.length === 0) {
-                    statusEl.innerText = "0 mods found.";
-                    return;
-                }
+        function createBlock(x, y, z, color = 0x8B4513) {
+            // Округляем позиции, чтобы блоки вставали ровно в сетку
+            const geo = new THREE.BoxGeometry(1, 1, 1);
+            const mat = new THREE.MeshStandardMaterial({ color: color });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(Math.round(x), Math.round(y), Math.round(z));
+            scene.add(mesh);
+            objects.push(mesh);
+            return mesh;
+        }
 
-                statusEl.innerText = `Loading ${mods.length} mods...`;
-                
-                // Подключаем каждый мод как <script type="module">
-                for (const modFile of mods) {
-                    const script = document.createElement('script');
-                    script.src = `/mods/${modFile}`;
-                    script.type = "module"; 
-                    script.onload = () => logChat(`[System] Loaded mod: ${modFile}`);
-                    script.onerror = () => logChat(`[Error] Failed to load: ${modFile}`);
-                    document.body.appendChild(script);
-                }
-                statusEl.innerText = "Active";
-            } catch (e) {
-                console.error(e);
-                statusEl.innerText = "Server Error (Run python!)";
-                logChat("[Error] Запустите server.py чтобы работали моды!");
+        function removeBlock(mesh) {
+            if (mesh.name === "floor") return; // Не ломать пол
+            
+            scene.remove(mesh);
+            const index = objects.indexOf(mesh);
+            if (index > -1) objects.splice(index, 1);
+            mesh.geometry.dispose();
+            mesh.material.dispose();
+        }
+
+        // --- УПРАВЛЕНИЕ ---
+        function onKeyDown(e) {
+            if (isChatting) {
+                if (e.code === 'Enter') toggleChat();
+                return;
+            }
+
+            switch (e.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'Space': if (canJump) velocity.y += 15; canJump = false; break;
+                case 'Enter': toggleChat(); break;
             }
         }
 
-        // --- 4. МУЛЬТИПЛЕЕР (WebSockets) ---
+        function onKeyUp(e) {
+            switch (e.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        function onMouseClick(e) {
+            if (isChatting || !controls.isLocked) return;
+
+            // Центр экрана
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(objects);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const obj = intersect.object;
+
+                // ЛКМ (0) - Удалить
+                if (e.button === 0) {
+                    removeBlock(obj);
+                    // Отправляем на сервер
+                    sendSocket({
+                        type: 'block',
+                        action: 'remove',
+                        x: obj.position.x, y: obj.position.y, z: obj.position.z
+                    });
+                }
+                // ПКМ (2) - Поставить
+                else if (e.button === 2) {
+                    // Вычисляем позицию нового блока на основе нормали грани
+                    const pos = intersect.point.clone().add(intersect.face.normal.multiplyScalar(0.5)).floor();
+                    // .floor() + 0.5 (если бы центрировали), но у нас Box(1,1,1)
+                    // Простая математика ThreeJS:
+                    // Если центр блока в (0,0,0), грань справа на x=0.5. Точка пересечения (0.5, 0, 0).
+                    // + нормаль (1,0,0)*0.5 = (1,0,0). Итого (1,0,0) - центр нового блока.
+                    // Поскольку мы используем Math.round в createBlock, передаем целые + 0.5 смещения от point
+                    
+                    const p = obj.position.clone().add(intersect.face.normal);
+                    
+                    // Цвет случайный или фиксированный (кирпич)
+                    const color = 0x8B4513; 
+                    createBlock(p.x, p.y, p.z, color);
+                    
+                    sendSocket({
+                        type: 'block',
+                        action: 'add',
+                        x: p.x, y: p.y, z: p.z,
+                        color: color
+                    });
+                }
+            }
+        }
+
+        // --- ЧАТ ---
+        function toggleChat() {
+            const input = document.getElementById('chat-input');
+            isChatting = !isChatting;
+
+            if (isChatting) {
+                controls.unlock();
+                input.style.display = 'block';
+                input.focus();
+                // Сброс движения при открытии чата
+                moveForward = moveBackward = moveLeft = moveRight = false;
+            } else {
+                const text = input.value.trim();
+                if (text) {
+                    // Отправка сообщения
+                    sendSocket({ type: 'chat', text: text });
+                    logChat(`Вы: ${text}`);
+                }
+                input.value = '';
+                input.style.display = 'none';
+                controls.lock();
+            }
+        }
+
+        function logChat(msg) {
+            const log = document.getElementById('chat-log');
+            const div = document.createElement('div');
+            div.textContent = msg;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // --- СЕТЬ ---
         function initMultiplayer() {
-            // Подключаемся к порту 8001 (как в server.py)
-            const wsUrl = 'ws://' + window.location.hostname + ':8001';
-            
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            const wsUrl = `${protocol}//${host}/ws`;
+
             try {
                 socket = new WebSocket(wsUrl);
 
                 socket.onopen = () => {
-                    logChat("Connected to Server!");
-                    document.getElementById('my-id').style.color = 'green';
-                };
-
-                socket.onclose = () => {
-                    document.getElementById('my-id').innerText = "Disconnected";
-                    document.getElementById('my-id').style.color = 'red';
+                    logChat("System: Connected to Server.");
+                    document.getElementById('my-id').style.color = '#0f0';
                 };
                 
                 socket.onmessage = (event) => {
                     const data = JSON.parse(event.data);
                     
-                    if (data.type === 'init') {
-                        myId = data.id;
-                        document.getElementById('my-id').innerText = myId;
-                    }
-                    else if (data.type === 'move') {
-                        updateOtherPlayer(data);
-                    }
-                    else if (data.type === 'player_leave') {
-                        removePlayer(data.id);
+                    switch(data.type) {
+                        case 'init':
+                            myId = data.id;
+                            document.getElementById('my-id').innerText = myId;
+                            break;
+                        case 'move':
+                            updatePlayer(data);
+                            break;
+                        case 'player_leave':
+                            removePlayer(data.id);
+                            break;
+                        case 'chat':
+                            logChat(`User ${data.id}: ${data.text}`);
+                            break;
+                        case 'block':
+                            handleBlockUpdate(data);
+                            break;
                     }
                 };
 
-                // Отправляем свои координаты 20 раз в секунду
+                // Отправка позиции
                 setInterval(() => {
                     if (socket.readyState === WebSocket.OPEN && myId) {
-                        const pos = controls.getObject().position;
-                        const rot = controls.getObject().rotation;
-                        
-                        socket.send(JSON.stringify({
+                        const obj = controls.getObject();
+                        sendSocket({
                             type: 'move',
-                            x: pos.x, y: pos.y, z: pos.z,
-                            ry: rot.y
-                        }));
+                            x: obj.position.x, y: obj.position.y, z: obj.position.z,
+                            ry: obj.rotation.y
+                        });
                     }
                 }, 50);
 
             } catch (e) {
-                logChat("Multiplayer failed to connect.");
+                logChat("System: Offline Mode.");
             }
         }
 
-        function updateOtherPlayer(data) {
-            // Если игрока еще нет, создаем его "куклу"
-            if (!otherPlayers[data.id]) {
-                const geo = new THREE.BoxGeometry(0.8, 1.8, 0.8);
-                const mat = new THREE.MeshLambertMaterial({ color: 0xff4444 }); // Красный цвет
-                const mesh = new THREE.Mesh(geo, mat);
-                scene.add(mesh);
-                otherPlayers[data.id] = mesh;
-                
-                // Создаем "голову" для красоты
-                const headGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-                const headMat = new THREE.MeshLambertMaterial({ color: 0xffcccc });
-                const head = new THREE.Mesh(headGeo, headMat);
-                head.position.y = 1.1;
-                mesh.add(head);
+        function sendSocket(data) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify(data));
+            }
+        }
 
-                logChat(`Player ${data.id} joined.`);
+        function updatePlayer(data) {
+            if (!playersMap[data.id]) {
+                // Создаем модель игрока
+                const group = new THREE.Group();
+                
+                // Тело
+                const body = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.6, 1.8, 0.4),
+                    new THREE.MeshLambertMaterial({ color: 0x0000ff })
+                );
+                body.position.y = 0.9; // Центр тела
+                
+                // Голова
+                const head = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.5, 0.5, 0.5),
+                    new THREE.MeshLambertMaterial({ color: 0xffcccc })
+                );
+                head.position.y = 2.0;
+
+                group.add(body);
+                group.add(head);
+                
+                scene.add(group);
+                playersMap[data.id] = group;
+                logChat(`System: User ${data.id} joined.`);
             }
 
-            // Обновляем позицию
-            const mesh = otherPlayers[data.id];
-            // Позиция приходит от камеры (глаз), поэтому опускаем модельку чуть ниже
-            mesh.position.set(data.x, data.y - 1.5, data.z); 
-            mesh.rotation.y = data.ry;
+            const p = playersMap[data.id];
+            // Интерполяция для плавности (простая)
+            p.position.set(data.x, data.y - 1.5, data.z); // Корректировка высоты, т.к. камера в голове
+            p.rotation.y = data.ry;
         }
 
         function removePlayer(id) {
-            if (otherPlayers[id]) {
-                scene.remove(otherPlayers[id]);
-                delete otherPlayers[id];
-                logChat(`Player ${id} disconnected.`);
+            if (playersMap[id]) {
+                scene.remove(playersMap[id]);
+                delete playersMap[id];
+                logChat(`System: User ${id} left.`);
             }
         }
 
-        function logChat(text) {
-            const el = document.getElementById('chat-log');
-            const line = document.createElement('div');
-            line.innerText = text;
-            el.appendChild(line);
-            el.scrollTop = el.scrollHeight; // Автоскролл
+        function handleBlockUpdate(data) {
+            if (data.action === 'add') {
+                // Проверяем, нет ли уже блока там (чтобы не дублировать)
+                // Для простоты просто ставим поверх, или можно искать по координатам
+                createBlock(data.x, data.y, data.z, data.color);
+            } else if (data.action === 'remove') {
+                // Ищем блок по координатам
+                const target = objects.find(o => 
+                    Math.abs(o.position.x - data.x) < 0.1 &&
+                    Math.abs(o.position.y - data.y) < 0.1 &&
+                    Math.abs(o.position.z - data.z) < 0.1
+                );
+                if (target) removeBlock(target);
+            }
+        }
+
+        async function loadMods() {
+            try {
+                const res = await fetch('/api/get_mods');
+                if(!res.ok) return;
+                const mods = await res.json();
+                document.getElementById('mod-status').innerText = `${mods.length} Active`;
+                for (const m of mods) {
+                    const s = document.createElement('script');
+                    s.type = 'module';
+                    s.src = `/mods/${m}`;
+                    document.body.appendChild(s);
+                }
+            } catch(e) {}
         }
 
         function onWindowResize() {
@@ -316,18 +452,17 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        // --- 5. ИГРОВОЙ ЦИКЛ ---
         function animate() {
             requestAnimationFrame(animate);
 
             const time = performance.now();
             const delta = (time - prevTime) / 1000;
+            prevTime = time;
 
             if (controls.isLocked) {
-                // Замедление (инерция)
                 velocity.x -= velocity.x * 10.0 * delta;
                 velocity.z -= velocity.z * 10.0 * delta;
-                velocity.y -= 50.0 * delta; // Гравитация
+                velocity.y -= 50.0 * delta; 
 
                 direction.z = Number(moveForward) - Number(moveBackward);
                 direction.x = Number(moveRight) - Number(moveLeft);
@@ -338,18 +473,14 @@
 
                 controls.moveRight(-velocity.x * delta);
                 controls.moveForward(-velocity.z * delta);
-
                 controls.getObject().position.y += (velocity.y * delta);
 
-                // Столкновение с полом (y = 0 плоскость)
-                // Камера находится на высоте глаз, поэтому пол это не 0, а ~1.6
-                if (controls.getObject().position.y < 2.0) { 
+                if (controls.getObject().position.y < 2.0) {
                     velocity.y = 0;
                     controls.getObject().position.y = 2.0;
                     canJump = true;
                 }
             }
-            prevTime = time;
             renderer.render(scene, camera);
         }
     </script>
