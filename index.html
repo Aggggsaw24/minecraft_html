@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>MC JS Mobile + Collision</title>
+    <title>MC JS Fixed Physics</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: 'Courier New', monospace; user-select: none; background: #000; }
         
-        /* UI Слой */
+        /* UI */
         #ui-layer { position: absolute; top: 10px; left: 10px; color: white; text-shadow: 1px 1px 0 #000; pointer-events: none; z-index: 5; }
         #crosshair { position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; transform: translate(-50%, -50%); pointer-events: none; z-index: 10; }
         #crosshair::before { content: ''; position: absolute; top: 9px; left: 0; width: 20px; height: 2px; background: rgba(255,255,255,0.8); }
@@ -18,7 +18,7 @@
         #chat-log { height: 150px; overflow-y: auto; background: linear-gradient(to top, rgba(0,0,0,0.8), transparent); padding: 5px; color: white; text-shadow: 1px 1px 0 #000; pointer-events: none; scrollbar-width: none; font-size: 12px; }
         #chat-input { width: 100%; padding: 5px; background: rgba(0, 0, 0, 0.6); border: 1px solid #555; color: white; display: none; pointer-events: auto; }
 
-        /* Экран входа */
+        /* Вход */
         #login-screen {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.9); display: flex; flex-direction: column;
@@ -43,7 +43,6 @@
         #btn-place { top: 0; right: 0; width: 50px; height: 50px; font-size: 12px; }
         #btn-break { top: 0; left: 0; width: 50px; height: 50px; font-size: 12px; background: rgba(255, 100, 100, 0.3); }
 
-        /* Инструкция */
         #instructions { display: none; text-align: center; color: #aaa; font-size: 12px; margin-top: 10px; }
     </style>
     <script type="importmap">
@@ -56,17 +55,16 @@
     </script>
 </head>
 <body>
-    <!-- ВХОД -->
     <div id="login-screen">
         <h1>MINECRAFT JS</h1>
         <div id="login-form">
-            <input type="text" id="nickname-input" placeholder="Введите Никнейм" maxlength="12">
+            <input type="text" id="nickname-input" placeholder="Никнейм" maxlength="12">
             <br>
             <button id="start-btn">ИГРАТЬ</button>
         </div>
         <div id="instructions">
-            ПК: WASD - Ходьба, SPACE - Прыжок, Мышь - Обзор/Стройка<br>
-            Мобильные: Экранные кнопки
+            ПК: WASD - Ходьба, SPACE - Прыжок<br>
+            Мобильный: Экранные кнопки
         </div>
     </div>
 
@@ -82,7 +80,6 @@
         <input type="text" id="chat-input" placeholder="Чат..." maxlength="50">
     </div>
 
-    <!-- МОБИЛЬНОЕ УПРАВЛЕНИЕ -->
     <div id="dpad" class="touch-controls">
         <div class="btn" id="btn-w">W</div>
         <div class="btn" id="btn-s">S</div>
@@ -91,34 +88,32 @@
     </div>
     <div id="actions" class="touch-controls">
         <div class="btn" id="btn-jump">JUMP</div>
-        <div class="btn" id="btn-place">BUILD</div>
-        <div class="btn" id="btn-break">DIG</div>
+        <div class="btn" id="btn-place">B</div>
+        <div class="btn" id="btn-break">D</div>
     </div>
 
     <script type="module">
         import * as THREE from 'three';
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
-        // --- КОНФИГ ---
+        // --- НАСТРОЙКИ ---
         const PLAYER_HEIGHT = 1.6;
-        const PLAYER_WIDTH = 0.6;
-        const MOVE_SPEED = 10.0;
+        const PLAYER_WIDTH = 0.5; // Чуть меньше блока
+        const MOVE_SPEED = 8.0;
         const JUMP_FORCE = 12.0;
+        const GRAVITY = 30.0;
 
-        // --- ГЛОБАЛЬНЫЕ ---
         let camera, scene, renderer, controls;
         let raycaster;
-        const objects = []; // Блоки
-        const playersMap = {}; // ID -> {mesh, nameLabel}
+        const objects = [];
+        const playersMap = {}; 
         
-        // Физика и Движение
         let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
         let canJump = false;
         let prevTime = performance.now();
         const velocity = new THREE.Vector3();
         const direction = new THREE.Vector3();
 
-        // Сеть и Игра
         let socket;
         let myId = null;
         let myName = "Guest";
@@ -126,7 +121,6 @@
         let isMobile = false;
         let isGameStarted = false;
 
-        // Касания (для камеры на мобилках)
         let touchStartX = 0;
         let touchStartY = 0;
         let cameraEuler = new THREE.Euler(0, 0, 0, 'YXZ');
@@ -134,10 +128,8 @@
         init();
         
         function init() {
-            // Определение мобильного устройства
             isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-            // Сцена
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x87CEEB);
             scene.fog = new THREE.Fog(0x87CEEB, 10, 60);
@@ -146,14 +138,13 @@
             camera.position.y = 10;
             cameraEuler.setFromQuaternion(camera.quaternion);
 
-            // Свет
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
             scene.add(ambientLight);
             const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
             dirLight.position.set(50, 100, 50);
             scene.add(dirLight);
 
-            // Пол
+            // ПОЛ
             const geometry = new THREE.PlaneGeometry(200, 200);
             geometry.rotateX(-Math.PI / 2);
             const material = new THREE.MeshBasicMaterial({ color: 0x5b8c38 });
@@ -162,42 +153,34 @@
             scene.add(floor);
             objects.push(floor); 
 
-            // Сетка
             const gridHelper = new THREE.GridHelper(200, 200);
             scene.add(gridHelper);
 
-            // Рендерер
             renderer = new THREE.WebGLRenderer({ antialias: false });
             renderer.setSize(window.innerWidth, window.innerHeight);
             document.body.appendChild(renderer.domElement);
 
-            // Управление
             controls = new PointerLockControls(camera, document.body);
             raycaster = new THREE.Raycaster();
             raycaster.far = 8;
 
-            // Обработчики входа
             document.getElementById('start-btn').addEventListener('click', startGame);
             
-            // Если ПК - используем PointerLock
             if (!isMobile) {
                 document.getElementById('instructions').style.display = 'block';
                 document.body.addEventListener('click', () => {
                     if (isGameStarted && !isChatting) controls.lock();
                 });
             } else {
-                // Если Мобильный - включаем UI
                 document.querySelectorAll('.touch-controls').forEach(el => el.style.display = 'block');
                 setupTouchControls();
             }
 
-            // Клавиатура
             document.addEventListener('keydown', onKeyDown);
             document.addEventListener('keyup', onKeyUp);
             document.addEventListener('mousedown', onMouseClick);
             window.addEventListener('resize', onWindowResize);
 
-            // Глобальный API
             window.GameAPI = {
                 scene: scene,
                 addBlock: createBlock,
@@ -211,33 +194,26 @@
             const nickInput = document.getElementById('nickname-input');
             const name = nickInput.value.trim() || "Steve";
             myName = name;
-
             document.getElementById('login-screen').style.display = 'none';
             isGameStarted = true;
-
             if (!isMobile) controls.lock();
             initMultiplayer();
         }
 
-        // --- МОБИЛЬНОЕ УПРАВЛЕНИЕ ---
         function setupTouchControls() {
             const bindBtn = (id, startFn, endFn) => {
                 const el = document.getElementById(id);
                 el.addEventListener('touchstart', (e) => { e.preventDefault(); startFn(); });
                 el.addEventListener('touchend', (e) => { e.preventDefault(); endFn(); });
             };
-
             bindBtn('btn-w', () => moveForward = true, () => moveForward = false);
             bindBtn('btn-s', () => moveBackward = true, () => moveBackward = false);
             bindBtn('btn-a', () => moveLeft = true, () => moveLeft = false);
             bindBtn('btn-d', () => moveRight = true, () => moveRight = false);
             bindBtn('btn-jump', () => { if(canJump) { velocity.y += JUMP_FORCE; canJump = false; } }, () => {});
-            
-            // Кнопки действий (Build/Break)
             bindBtn('btn-break', () => doInteraction(0), () => {});
             bindBtn('btn-place', () => doInteraction(2), () => {});
 
-            // Вращение камерой (свайп по свободной зоне)
             document.addEventListener('touchstart', (e) => {
                 if (e.target.classList.contains('btn')) return;
                 touchStartX = e.touches[0].clientX;
@@ -248,42 +224,31 @@
                 if (e.target.classList.contains('btn')) return;
                 const touchX = e.touches[0].clientX;
                 const touchY = e.touches[0].clientY;
-                
-                const deltaX = touchX - touchStartX;
-                const deltaY = touchY - touchStartY;
-
-                // Чувствительность
-                cameraEuler.y -= deltaX * 0.005;
-                cameraEuler.x -= deltaY * 0.005;
+                cameraEuler.y -= (touchX - touchStartX) * 0.005;
+                cameraEuler.x -= (touchY - touchStartY) * 0.005;
                 cameraEuler.x = Math.max( - Math.PI / 2, Math.min( Math.PI / 2, cameraEuler.x ) );
-
                 camera.quaternion.setFromEuler(cameraEuler);
-
                 touchStartX = touchX;
                 touchStartY = touchY;
             }, {passive: false});
         }
 
-        // --- КОЛЛИЗИЯ (AABB) ---
-        function checkCollision(newPos) {
-            // Простая проверка: если новый бокс пересекает любой блок
-            // Для оптимизации проверяем только ближайшие блоки (округлив позицию)
-            
-            const pMin = { x: newPos.x - PLAYER_WIDTH/2, y: newPos.y - PLAYER_HEIGHT, z: newPos.z - PLAYER_WIDTH/2 };
-            const pMax = { x: newPos.x + PLAYER_WIDTH/2, y: newPos.y, z: newPos.z + PLAYER_WIDTH/2 };
+        // --- УЛУЧШЕННАЯ КОЛЛИЗИЯ ---
+        function checkCollision(position) {
+            const pMin = { x: position.x - PLAYER_WIDTH/2, y: position.y - PLAYER_HEIGHT, z: position.z - PLAYER_WIDTH/2 };
+            const pMax = { x: position.x + PLAYER_WIDTH/2, y: position.y, z: position.z + PLAYER_WIDTH/2 };
 
             for (let obj of objects) {
-                if (obj.name === 'floor') continue; // Пол обрабатывается отдельно
+                if (obj.name === 'floor') continue;
 
-                // Границы блока (они 1x1x1)
+                // Блоки 1x1x1
                 const bMin = { x: obj.position.x - 0.5, y: obj.position.y - 0.5, z: obj.position.z - 0.5 };
                 const bMax = { x: obj.position.x + 0.5, y: obj.position.y + 0.5, z: obj.position.z + 0.5 };
 
-                // AABB Intersection
                 if (pMin.x < bMax.x && pMax.x > bMin.x &&
                     pMin.y < bMax.y && pMax.y > bMin.y &&
                     pMin.z < bMax.z && pMax.z > bMin.z) {
-                    return true; // Столкновение
+                    return true;
                 }
             }
             return false;
@@ -307,7 +272,6 @@
             document.getElementById('block-count').innerText = objects.length - 1;
         }
 
-        // --- ВЗАИМОДЕЙСТВИЕ ---
         function doInteraction(button) {
             raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
             const intersects = raycaster.intersectObjects(objects);
@@ -316,19 +280,18 @@
                 const intersect = intersects[0];
                 const obj = intersect.object;
 
-                if (button === 0) { // Break
+                if (button === 0) { 
                     if (obj.name === 'floor') return;
                     removeBlock(obj);
                     sendSocket({ type: 'block', action: 'remove', x: obj.position.x, y: obj.position.y, z: obj.position.z });
-                } else if (button === 2) { // Build
+                } else if (button === 2) { 
                     const p = intersect.point.clone().add(intersect.face.normal.multiplyScalar(0.5));
                     const x = Math.floor(p.x) + 0.5;
                     const y = Math.floor(p.y) + 0.5;
                     const z = Math.floor(p.z) + 0.5;
                     
-                    // Не ставить блок в себя
                     const dist = new THREE.Vector3(x,y,z).distanceTo(camera.position);
-                    if (dist < 1.5) return;
+                    if (dist < 1.2) return; // Чтобы не застрять в блоке при постройке
 
                     const color = 0x8B4513;
                     createBlock(x, y, z, color);
@@ -343,7 +306,6 @@
             doInteraction(e.button);
         }
 
-        // --- НИКНЕЙМЫ ---
         function createTextSprite(text) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
@@ -351,21 +313,17 @@
             const width = ctx.measureText(text).width;
             canvas.width = width + 20;
             canvas.height = 50;
-            
             ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.fillStyle = "white";
             ctx.font = 'Bold 40px Arial';
             ctx.fillText(text, 10, 40);
-            
             const texture = new THREE.CanvasTexture(canvas);
-            const spriteMat = new THREE.SpriteMaterial({ map: texture });
-            const sprite = new THREE.Sprite(spriteMat);
+            const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture }));
             sprite.scale.set(canvas.width / 40, canvas.height / 40, 1);
             return sprite;
         }
 
-        // --- СЕТЬ ---
         function initMultiplayer() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const host = window.location.host;
@@ -374,7 +332,7 @@
             try {
                 socket = new WebSocket(wsUrl);
                 socket.onopen = () => {
-                    logChat("Connected!");
+                    logChat("Online");
                     socket.send(JSON.stringify({ type: 'join', name: myName }));
                 };
                 
@@ -394,7 +352,6 @@
                     else if (data.type === 'chat') logChat(`${data.name || 'User'}: ${data.text}`);
                 };
 
-                // Отправка позиции
                 setInterval(() => {
                     if (socket.readyState === WebSocket.OPEN && myId) {
                         socket.send(JSON.stringify({
@@ -405,32 +362,25 @@
                     }
                 }, 50);
 
-            } catch (e) { logChat("Offline Mode"); }
+            } catch (e) { logChat("Offline"); }
         }
 
         function updatePlayer(data) {
             if (!playersMap[data.id]) {
                 const group = new THREE.Group();
                 const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.8, 0.4), new THREE.MeshLambertMaterial({ color: 0x0000ff }));
-                body.position.y = 0.9; // Feet at 0
-                
+                body.position.y = 0.9;
                 const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshLambertMaterial({ color: 0xffcccc }));
                 head.position.y = 2.0;
-
-                // Имя
                 const label = createTextSprite(data.name || "Player");
                 label.position.y = 2.6;
-
                 group.add(body);
                 group.add(head);
                 group.add(label);
-                
                 scene.add(group);
                 playersMap[data.id] = group;
             }
-
             const p = playersMap[data.id];
-            // Интерполяция
             p.position.lerp(new THREE.Vector3(data.x, data.y - PLAYER_HEIGHT, data.z), 0.5);
             p.rotation.y = data.ry;
         }
@@ -479,14 +429,12 @@
                 case 'KeyD': moveRight = false; break;
             }
         }
-
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        // --- ГЛАВНЫЙ ЦИКЛ ---
         function animate() {
             requestAnimationFrame(animate);
             if (!isGameStarted) return;
@@ -495,68 +443,54 @@
             const delta = (time - prevTime) / 1000;
             prevTime = time;
 
-            // Торможение
             velocity.x -= velocity.x * 10.0 * delta;
             velocity.z -= velocity.z * 10.0 * delta;
-            velocity.y -= 30.0 * delta; // Гравитация
+            velocity.y -= GRAVITY * delta;
 
             direction.z = Number(moveForward) - Number(moveBackward);
             direction.x = Number(moveRight) - Number(moveLeft);
             direction.normalize();
 
-            if (moveForward || moveBackward) velocity.z -= direction.z * 100.0 * delta; // Скорость меньше из-за трения
+            if (moveForward || moveBackward) velocity.z -= direction.z * 100.0 * delta;
             if (moveLeft || moveRight) velocity.x -= direction.x * 100.0 * delta;
 
-            // --- ПРИМЕНЕНИЕ ДВИЖЕНИЯ С КОЛЛИЗИЕЙ ---
-            // 1. Двигаем X
+            // --- ИСПРАВЛЕННАЯ ФИЗИКА ---
+            // Двигаем по X
+            const oldX = camera.position.x;
             if (!isMobile) controls.moveRight(-velocity.x * delta);
             else {
-                // Ручной расчет движения для мобильных (относительно поворота камеры)
                 const v = new THREE.Vector3(direction.x, 0, direction.z).applyEuler(new THREE.Euler(0, cameraEuler.y, 0));
                 camera.position.x += v.x * MOVE_SPEED * delta;
+            }
+            if (checkCollision(camera.position)) camera.position.x = oldX; // Откат
+
+            // Двигаем по Z
+            const oldZ = camera.position.z;
+            if (!isMobile) controls.moveForward(-velocity.z * delta);
+            else {
+                const v = new THREE.Vector3(direction.x, 0, direction.z).applyEuler(new THREE.Euler(0, cameraEuler.y, 0));
                 camera.position.z += v.z * MOVE_SPEED * delta;
             }
+            if (checkCollision(camera.position)) camera.position.z = oldZ; // Откат
 
-            // Проверка X/Z
-            // В PointerLockControls позиция уже обновилась внутри moveRight/moveForward
-            // Если столкнулись - откатываем назад
-            if (checkCollision(camera.position)) {
-                if (!isMobile) controls.moveRight(velocity.x * delta); // Откат
-                else {
-                    // Откат для мобильных (упрощенно)
-                    const v = new THREE.Vector3(direction.x, 0, direction.z).applyEuler(new THREE.Euler(0, cameraEuler.y, 0));
-                    camera.position.x -= v.x * MOVE_SPEED * delta;
-                    camera.position.z -= v.z * MOVE_SPEED * delta;
-                }
-            }
-
-            if (!isMobile) controls.moveForward(-velocity.z * delta);
-             if (checkCollision(camera.position)) {
-                if (!isMobile) controls.moveForward(velocity.z * delta);
-            }
-
-            // 2. Двигаем Y (Гравитация)
+            // Двигаем по Y
             camera.position.y += velocity.y * delta;
-
-            // Проверка пола/блоков снизу
+            
+            // Проверка пола/потолка
             if (checkCollision(camera.position)) {
-                // Если мы падали вниз и ударились
-                if (velocity.y < 0) {
+                if (velocity.y < 0) { // Падаем
                     velocity.y = 0;
                     canJump = true;
-                    // Поднимаем игрока чуть вверх из блока, чтобы не застревал
-                    // Округляем до ближайшей вершины блока
-                    camera.position.y = Math.ceil(camera.position.y - PLAYER_HEIGHT) + PLAYER_HEIGHT; 
-                } 
-                // Если прыгнули в потолок
-                else if (velocity.y > 0) {
+                    // Выталкиваем вверх на крышу блока
+                    camera.position.y = Math.ceil(camera.position.y - PLAYER_HEIGHT) + PLAYER_HEIGHT;
+                } else if (velocity.y > 0) { // Бьемся головой
                     velocity.y = 0;
-                    camera.position.y -= 0.1;
+                    camera.position.y = Math.floor(camera.position.y) - 0.01;
                 }
             }
 
-            // Безопасный пол мира
-            if (camera.position.y < 0.5) {
+            // Жесткий пол мира (фикс проваливания)
+            if (camera.position.y < PLAYER_HEIGHT) {
                 velocity.y = 0;
                 camera.position.y = PLAYER_HEIGHT;
                 canJump = true;
