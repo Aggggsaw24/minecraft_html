@@ -31,26 +31,28 @@ async def websocket_handler(request):
     await ws.prepare(request)
 
     player_id = id(ws)
+    default_name = f"Guest_{str(player_id)[-4:]}"
+    
     # Инициализируем игрока с начальными координатами
     CONNECTED_CLIENTS[ws] = {
         'id': player_id, 
-        'name': f"Guest_{str(player_id)[-4:]}",
+        'name': default_name,
         'x': 0, 'y': 10, 'z': 0, 'ry': 0
     }
     print(f"[WS] Игрок {player_id} подключился")
 
     try:
-        # 1. Отправляем ID игроку
+        # 1. Отправляем ID игроку (Личная инициализация)
         await ws.send_json({"type": "init", "id": player_id})
 
-        # 2. Отправляем текущий мир (Блоки)
+        # 2. Отправляем текущий мир (Загрузка блоков)
         if WORLD_STATE:
             await ws.send_json({
                 "type": "world_load", 
                 "blocks": WORLD_STATE
             })
 
-        # 3. Отправляем новому игроку позиции УЖЕ существующих игроков
+        # 3. Отправляем новому игроку позиции ВСЕХ существующих игроков
         for client_ws, info in CONNECTED_CLIENTS.items():
             if client_ws != ws and not client_ws.closed:
                 try:
@@ -64,22 +66,36 @@ async def websocket_handler(request):
                         'ry': info['ry']
                     })
                 except Exception:
-                    pass # Игнорируем ошибки при отправке начальных данных
+                    pass
 
-        # 4. Слушаем сообщения
+        # 4. СООБЩАЕМ ВСЕМ ОСТАЛЬНЫМ О НОВОМ ИГРОКЕ СРАЗУ
+        # Это решает проблему "невидимости" при входе
+        join_announcement = {
+            'type': 'join',
+            'id': player_id,
+            'name': default_name
+        }
+        for client in list(CONNECTED_CLIENTS.keys()):
+            if client != ws and not client.closed:
+                try:
+                    await client.send_json(join_announcement)
+                except Exception:
+                    pass
+
+        # 5. Слушаем сообщения
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
                     data['id'] = player_id 
 
-                    # Обработка входа
+                    # Обработка смены ника (join)
                     if data.get('type') == 'join':
-                        name = data.get('name', 'Guest')
+                        name = data.get('name', default_name)
                         CONNECTED_CLIENTS[ws]['name'] = name
                         data['name'] = name
 
-                    # Обработка движения (обновляем память сервера)
+                    # Обработка движения (сохраняем в памяти сервера)
                     if data.get('type') == 'move':
                         CONNECTED_CLIENTS[ws]['x'] = data.get('x', 0)
                         CONNECTED_CLIENTS[ws]['y'] = data.get('y', 0)
@@ -95,6 +111,7 @@ async def websocket_handler(request):
                                 'color': data['color']
                             }
                             WORLD_STATE.append(block_data)
+                            print(f"[Block] Add at {data['x']}, {data['y']}, {data['z']}")
                         
                         elif data['action'] == 'remove':
                             WORLD_STATE = [b for b in WORLD_STATE if not (
@@ -102,15 +119,15 @@ async def websocket_handler(request):
                                 abs(b['y'] - data['y']) < 0.1 and 
                                 abs(b['z'] - data['z']) < 0.1
                             )]
+                            print(f"[Block] Remove at {data['x']}, {data['y']}, {data['z']}")
 
-                    # Рассылка всем остальным
+                    # Рассылка всем остальным игрокам
                     for client in list(CONNECTED_CLIENTS.keys()):
                         if client != ws and not client.closed:
                             try:
                                 await client.send_json(data)
                             except Exception:
-                                # Если клиент отвалился во время рассылки, просто игнорируем
-                                pass
+                                pass # Игнорируем ошибки сети при рассылке
                             
                 except Exception as e:
                     print(f"Ошибка данных: {e}")
@@ -121,12 +138,11 @@ async def websocket_handler(request):
         if ws in CONNECTED_CLIENTS:
             del CONNECTED_CLIENTS[ws]
         
+        # Сообщаем всем о выходе игрока
         leave_msg = {"type": "player_leave", "id": player_id}
-        # Рассылка сообщения о выходе
         for client in list(CONNECTED_CLIENTS.keys()):
             if not client.closed:
                 try:
-                    # Оборачиваем в try-except, чтобы избежать ClientConnectionResetError
                     await client.send_json(leave_msg)
                 except Exception:
                     pass
