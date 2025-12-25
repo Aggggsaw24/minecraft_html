@@ -1,112 +1,88 @@
-import http.server
-import socketserver
 import os
 import json
 import asyncio
-import threading
-import mimetypes
+from aiohttp import web
 
-# Попробуйте установить: pip install websockets
-try:
-    import websockets
-except ImportError:
-    print("ОШИБКА: Нужна библиотека websockets. Выполните: pip install websockets")
-    exit()
-
-HTTP_PORT = 8000
-WS_PORT = 8001
+# Получаем порт из окружения или используем 8080
+PORT = int(os.environ.get("PORT", 8080))
 MODS_DIR = 'mods'
 
-# 1. HTTP СЕРВЕР (Раздает игру и моды)
-class GameRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        # API endpoint для получения списка модов
-        if self.path == '/api/get_mods':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
-            mods = []
-            if os.path.exists(MODS_DIR):
-                for f in os.listdir(MODS_DIR):
-                    if f.endswith('.js'):
-                        mods.append(f)
-            
-            self.wfile.write(json.dumps(mods).encode())
-            print(f"[API] Список модов отправлен: {mods}")
-            return
-        
-        # Раздача файлов из папки mods
-        if self.path.startswith('/mods/'):
-            # Безопасная отдача файлов
-            return super().do_GET()
-
-        return super().do_GET()
-
-def run_http_server():
-    print(f"--- HTTP Сервер запущен: http://localhost:{HTTP_PORT} ---")
-    # Разрешаем js файлы как модули
-    mimetypes.add_type('application/javascript', '.js')
-    with socketserver.TCPServer(("", HTTP_PORT), GameRequestHandler) as httpd:
-        httpd.serve_forever()
-
-# 2. WEBSOCKET СЕРВЕР (Мультиплеер)
+# Хранилище подключенных игроков {ws_connection: player_id}
 CONNECTED_CLIENTS = {}
 
-async def handler(websocket):
-    # Присваиваем ID игроку
-    player_id = id(websocket)
-    CONNECTED_CLIENTS[player_id] = websocket
+async def handle_index(request):
+    """Отдает главную страницу игры"""
+    return web.FileResponse('./index.html')
+
+async def handle_mods_list(request):
+    """API: Отдает список модов из папки mods"""
+    mods = []
+    if os.path.exists(MODS_DIR):
+        for f in os.listdir(MODS_DIR):
+            if f.endswith('.js'):
+                mods.append(f)
+    return web.json_response(mods)
+
+async def websocket_handler(request):
+    """Обрабатывает мультиплеер"""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    player_id = id(ws)
+    CONNECTED_CLIENTS[ws] = player_id
     print(f"[WS] Игрок {player_id} подключился")
-    
+
     try:
-        # Отправляем игроку его ID
-        await websocket.send(json.dumps({"type": "init", "id": player_id}))
-        
-        async for message in websocket:
-            data = json.loads(message)
-            
-            # Добавляем ID отправителя к данным
-            data['id'] = player_id
-            
-            # Рассылаем всем ОСТАЛЬНЫМ игрокам
-            for pid, client in CONNECTED_CLIENTS.items():
-                if pid != player_id:
-                    try:
-                        await client.send(json.dumps(data))
-                    except:
-                        pass # Ошибка отправки (клиент отключился)
-    except Exception as e:
-        print(f"Ошибка сокета: {e}")
+        # 1. Отправляем игроку его ID
+        await ws.send_json({"type": "init", "id": player_id})
+
+        # 2. Слушаем сообщения от игрока
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    data['id'] = player_id # Подписываем сообщение
+
+                    # Рассылаем всем остальным
+                    for client in list(CONNECTED_CLIENTS.keys()):
+                        if client != ws and not client.closed:
+                            await client.send_json(data)
+                except Exception as e:
+                    print(f"Ошибка данных: {e}")
+            elif msg.type == web.WSMsgType.ERROR:
+                print('ws connection closed with exception %s', ws.exception())
+
     finally:
-        del CONNECTED_CLIENTS[player_id]
+        # Игрок ушел
+        if ws in CONNECTED_CLIENTS:
+            del CONNECTED_CLIENTS[ws]
         print(f"[WS] Игрок {player_id} отключился")
-        # Сообщаем всем, что игрок ушел, чтобы удалить его модельку
-        disconnect_msg = json.dumps({"type": "player_leave", "id": player_id})
-        for client in CONNECTED_CLIENTS.values():
-            try:
-                await client.send(disconnect_msg)
-            except:
-                pass
+        
+        # Сообщаем всем, чтобы удалили модельку игрока
+        leave_msg = {"type": "player_leave", "id": player_id}
+        for client in list(CONNECTED_CLIENTS.keys()):
+            if not client.closed:
+                await client.send_json(leave_msg)
 
-async def start_ws_server():
-    print(f"--- WebSocket Сервер запущен на порту {WS_PORT} ---")
-    async with websockets.serve(handler, "0.0.0.0", WS_PORT):
-        await asyncio.Future()  # run forever
+    return ws
 
-# Запуск в потоках
-if __name__ == "__main__":
+async def init_app():
     if not os.path.exists(MODS_DIR):
         os.makedirs(MODS_DIR)
-        print(f"Создана папка '{MODS_DIR}'. Положите туда .js скрипты!")
 
-    # Запускаем HTTP в отдельном потоке
-    http_thread = threading.Thread(target=run_http_server)
-    http_thread.daemon = True
-    http_thread.start()
+    app = web.Application()
+    
+    # Маршруты
+    app.router.add_get('/', handle_index)
+    app.router.add_get('/ws', websocket_handler)          # Вебсокет
+    app.router.add_get('/api/get_mods', handle_mods_list) # Список модов
+    app.router.add_static('/mods/', path=MODS_DIR, name='mods') # Файлы модов
+    
+    return app
 
-    # Запускаем WS в основном потоке (asyncio)
+if __name__ == '__main__':
+    print(f"--- Сервер запущен: http://localhost:{PORT} ---")
     try:
-        asyncio.run(start_ws_server())
+        web.run_app(init_app(), port=PORT)
     except KeyboardInterrupt:
-        print("Сервер остановлен.")
+        pass
