@@ -272,6 +272,13 @@
             document.getElementById('block-count').innerText = objects.length - 1;
         }
 
+        // Вспомогательная функция отправки данных (ИСПРАВЛЕНИЕ ОШИБКИ)
+        function sendSocket(data) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify(data));
+            }
+        }
+
         function doInteraction(button) {
             raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
             const intersects = raycaster.intersectObjects(objects);
